@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>RodFiles</title>
+<script src="https://unpkg.com/lucide@latest"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    background: #000; color: #fff;
+    font-family: Arial, Helvetica, sans-serif;
+    min-height: 100vh; -webkit-font-smoothing: antialiased;
+  }
+  body { display: flex; align-items: center; justify-content: center; padding: 24px; }
+  .wrap { width: 100%; max-width: 520px; display: flex; flex-direction: column; gap: 18px; }
+  .brand { display: flex; align-items: center; gap: 10px; font-size: 20px; font-weight: bold; letter-spacing: .5px; }
+  .brand svg { width: 22px; height: 22px; }
+
+  .drop {
+    border: 1.5px dashed #2a2a2a; border-radius: 14px;
+    padding: 48px 20px; text-align: center;
+    transition: all .2s ease; background: #0a0a0a; cursor: pointer;
+  }
+  .drop:hover { border-color: #444; background: #0d0d0d; }
+  .drop.active { border-color: #fff; background: #111; }
+  .drop svg { width: 34px; height: 34px; margin-bottom: 12px; stroke-width: 1.5; }
+  .drop p { font-size: 14px; color: #888; }
+  .drop p strong { color: #fff; }
+  .drop small { display: block; margin-top: 6px; font-size: 12px; color: #555; }
+
+  .progress { height: 4px; background: #1a1a1a; border-radius: 4px; overflow: hidden; display: none; }
+  .progress.show { display: block; }
+  .progress > div { height: 100%; width: 0%; background: #fff; transition: width .2s ease; }
+
+  .result {
+    display: none; flex-direction: column; gap: 10px; padding: 16px;
+    background: #0a0a0a; border: 1px solid #1a1a1a; border-radius: 14px;
+  }
+  .result.show { display: flex; }
+  .result .label { font-size: 12px; color: #666; }
+  .result .link-row { display: flex; gap: 8px; align-items: center; }
+  .result .link {
+    flex: 1; font-size: 13px; color: #fff; background: #111;
+    border: 1px solid #1a1a1a; border-radius: 8px; padding: 10px 12px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: Arial;
+  }
+  button {
+    background: #111; color: #fff; border: 1px solid #222; border-radius: 8px;
+    padding: 10px 14px; font-family: Arial; font-size: 13px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 6px; transition: all .15s;
+  }
+  button:hover { background: #1a1a1a; border-color: #333; }
+  button:active { transform: scale(.98); }
+  button svg { width: 15px; height: 15px; }
+  .status { font-size: 12px; color: #666; text-align: center; min-height: 14px; }
+  .status.err { color: #ff5555; }
+  .status.ok  { color: #55ff88; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="brand"><i data-lucide="folder-lock"></i><span>RodFiles</span></div>
+
+    <div class="drop" id="drop">
+      <i data-lucide="upload-cloud"></i>
+      <p><strong>Arraste um arquivo</strong> ou clique para escolher</p>
+      <small>.zip .rar .exe .dll — pastas não suportadas</small>
+      <input type="file" id="file" hidden />
+    </div>
+
+    <div class="progress" id="prog"><div id="bar"></div></div>
+
+    <div class="result" id="result">
+      <div class="label">Link do arquivo</div>
+      <div class="link-row">
+        <div class="link" id="link"></div>
+        <button id="copy"><i data-lucide="copy"></i> Copiar</button>
+      </div>
+    </div>
+
+    <div class="status" id="status"></div>
+  </div>
+
+<script>
+  const drop   = document.getElementById('drop');
+  const input  = document.getElementById('file');
+  const prog   = document.getElementById('prog');
+  const bar    = document.getElementById('bar');
+  const result = document.getElementById('result');
+  const linkEl = document.getElementById('link');
+  const copyBt = document.getElementById('copy');
+  const status = document.getElementById('status');
+
+  const ACCESS_KEY = 'kphebonito';
+  const SIGN_URL   = '/api/sign';
+
+  lucide.createIcons();
+  const setStatus = (m, k='') => { status.textContent = m; status.className = 'status ' + k; };
+
+  function validFile(f) {
+    if (!f) return 'Nada selecionado';
+    const ok = ['.zip','.rar','.7z','.exe','.dll','.msi','.tar','.gz','.pdf','.iso'];
+    if (!ok.some(e => f.name.toLowerCase().endsWith(e))) return 'Formato não permitido';
+    return null;
+  }
+
+  async function upload(file) {
+    const err = validFile(file);
+    if (err) return setStatus(err, 'err');
+
+    result.classList.remove('show');
+    prog.classList.add('show');
+    bar.style.width = '0%';
+    setStatus('Preparando...');
+
+    try {
+      // 1. pede URL assinada pro backend
+      const ext = file.name.split('.').pop().toLowerCase();
+      const sign = await fetch(SIGN_URL, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ key: ACCESS_KEY, ext }),
+      });
+      if (!sign.ok) throw new Error('falha ao assinar');
+      const { uploadUrl, publicUrl } = await sign.json();
+
+      // 2. envia direto pro R2 (sem passar pela Vercel!)
+      setStatus('Enviando...');
+      await new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('PUT', uploadUrl);
+        xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+
+        xhr.upload.onprogress = e => {
+          if (e.lengthComputable) bar.style.width = ((e.loaded / e.total) * 100) + '%';
+        };
+
+        xhr.onload = () => xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error(xhr.status));
+        xhr.onerror = () => reject(new Error('network'));
+        xhr.send(file);
+      });
+
+      // 3. mostra link público
+      prog.classList.remove('show');
+      linkEl.textContent = publicUrl;
+      result.classList.add('show');
+      setStatus('Upload concluído ✓', 'ok');
+    } catch (e) {
+      prog.classList.remove('show');
+      setStatus('Erro: ' + e.message, 'err');
+    }
+  }
+
+  drop.addEventListener('click', () => input.click());
+  input.addEventListener('change', e => upload(e.target.files[0]));
+
+  ['dragenter','dragover'].forEach(ev =>
+    drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('active'); })
+  );
+  ['dragleave','drop'].forEach(ev =>
+    drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('active'); })
+  );
+  drop.addEventListener('drop', e => upload(e.dataTransfer.files[0]));
+
+  copyBt.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(linkEl.textContent);
+      copyBt.innerHTML = '<i data-lucide="check"></i> Copiado';
+      lucide.createIcons();
+      setTimeout(() => {
+        copyBt.innerHTML = '<i data-lucide="copy"></i> Copiar';
+        lucide.createIcons();
+      }, 1500);
+    } catch { setStatus('Não foi possível copiar', 'err'); }
+  });
+</script>
+</body>
+</html>
